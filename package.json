@@ -1,0 +1,9 @@
+{
+  "name": "shoushi-go",
+  "version": "1.0.0",
+  "private": true,
+  "description": "收拾亿下就出发 - 本地优先的出行物品提醒 Web 应用",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
