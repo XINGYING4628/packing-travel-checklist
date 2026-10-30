@@ -1,4 +1,4 @@
-const CACHE_NAME = "shoushi-go-v5";
+const CACHE_NAME = "shoushi-go-v6";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -26,15 +26,22 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  const networkFirst = event.request.mode === "navigate" || ["document", "script", "style"].includes(event.request.destination);
   event.respondWith(
-    caches.match(event.request).then((cached) => {
+    (networkFirst ? fetch(event.request).then((response) => {
+      if (response && response.status === 200 && response.type !== "opaque") {
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+      }
+      return response;
+    }).catch(() => caches.match(event.request).then((cached) => cached || (event.request.mode === "navigate" ? caches.match("./index.html") : Response.error()))) : caches.match(event.request).then((cached) => {
       if (cached) return cached;
       return fetch(event.request).then((response) => {
         if (!response || response.status !== 200 || response.type === "opaque") return response;
         const copy = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
         return response;
-      }).catch(() => caches.match("./index.html"));
-    })
+      }).catch(() => Response.error());
+    }))
   );
 });

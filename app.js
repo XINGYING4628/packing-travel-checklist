@@ -3,6 +3,10 @@
 
   const STORAGE_KEY = "shoushi-go-store-v1";
   const APP_VERSION = 1;
+  const JOURNAL_DB_NAME = "shoushi-go-journal-media";
+  const JOURNAL_DB_VERSION = 1;
+  const JOURNAL_MEDIA_STORE = "photos";
+  const JOURNAL_MAX_PHOTOS = 9;
   const templateStyles = {
     essential: { color: "#f8e9b9", icon: "i-lock" },
     short: { color: "#d9e6d8", icon: "i-suitcase" },
@@ -52,6 +56,11 @@
   let lastFocusedElement = null;
   let modalSubmitHandler = null;
   let pendingImport = null;
+  let pendingImportMedia = {};
+  let pendingJournalImages = [];
+  let journalDraftText = "";
+  let journalDraftTripId = null;
+  let journalDbPromise = null;
 
   const dom = {
     main: document.getElementById("mainContent"),
@@ -60,6 +69,7 @@
     modalContent: document.getElementById("modalContent"),
     toastStack: document.getElementById("toastStack"),
     importFile: document.getElementById("importFile"),
+    journalPhotoInput: document.getElementById("journalPhotoInput"),
     offlineBanner: document.getElementById("offlineBanner")
   };
 
@@ -144,6 +154,101 @@
 
   function icon(name) {
     return `<svg aria-hidden="true"><use href="#${name}"></use></svg>`;
+  }
+
+  function openJournalDb() {
+    if (!("indexedDB" in window)) return Promise.reject(new Error("当前浏览器不支持本地照片存储"));
+    if (journalDbPromise) return journalDbPromise;
+    journalDbPromise = new Promise((resolve, reject) => {
+      const request = indexedDB.open(JOURNAL_DB_NAME, JOURNAL_DB_VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(JOURNAL_MEDIA_STORE)) {
+          db.createObjectStore(JOURNAL_MEDIA_STORE);
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("无法打开照片存储"));
+      request.onblocked = () => reject(new Error("照片存储正在被其他页面占用"));
+    });
+    return journalDbPromise;
+  }
+
+  async function journalMediaRequest(mode, operation) {
+    const db = await openJournalDb();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(JOURNAL_MEDIA_STORE, mode);
+      const store = transaction.objectStore(JOURNAL_MEDIA_STORE);
+      const request = operation(store);
+      transaction.oncomplete = () => resolve(request?.result);
+      transaction.onerror = () => reject(transaction.error || request?.error || new Error("照片存储失败"));
+      transaction.onabort = () => reject(transaction.error || new Error("照片存储已中断"));
+    });
+  }
+
+  function putJournalImage(imageId, dataUrl) {
+    return journalMediaRequest("readwrite", (store) => store.put(dataUrl, imageId));
+  }
+
+  function getJournalImage(imageId) {
+    return journalMediaRequest("readonly", (store) => store.get(imageId));
+  }
+
+  function deleteJournalImages(imageIds = []) {
+    const ids = [...new Set(imageIds.filter(Boolean))];
+    if (!ids.length) return Promise.resolve();
+    return Promise.all(ids.map((imageId) => journalMediaRequest("readwrite", (store) => store.delete(imageId))));
+  }
+
+  function clearJournalImages() {
+    return journalMediaRequest("readwrite", (store) => store.clear());
+  }
+
+  function getTripJournalImages(trips = []) {
+    return trips.flatMap((trip) => (trip.journal || []).flatMap((entry) => (entry.images || []).map((image) => image.id))).filter(Boolean);
+  }
+
+  function formatJournalDate(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "刚刚";
+    return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  function loadImageFile(file) {
+    return new Promise((resolve, reject) => {
+      const objectUrl = URL.createObjectURL(file);
+      const image = new Image();
+      image.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        resolve(image);
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error("这张照片的格式无法读取"));
+      };
+      image.src = objectUrl;
+    });
+  }
+
+  async function prepareJournalImage(file) {
+    if (!file?.type?.startsWith("image/")) throw new Error("请选择图片文件");
+    const image = await loadImageFile(file);
+    const maxSide = 1600;
+    const scale = Math.min(1, maxSide / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height));
+    const width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
+    const height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+    return {
+      id: uid("journalphoto"),
+      name: String(file.name || "旅途照片").slice(0, 80),
+      dataUrl: canvas.toDataURL("image/jpeg", 0.8)
+    };
   }
 
   function makeItem(name, quantity = 1, note = "", checked = false) {
@@ -348,6 +453,7 @@
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       reminders: [],
+      journal: [],
       categories: template.categories.map((category, categoryIndex) => ({
         id: uid("tripcat"),
         name: category.name,
@@ -379,7 +485,17 @@
         avatarClass: avatarClasses.includes(profile.avatarClass) ? profile.avatarClass : avatarClasses[index % avatarClasses.length],
         createdAt: profile.createdAt || new Date().toISOString(),
         templates: profile.templates,
-        trips: profile.trips,
+        trips: profile.trips.map((trip) => ({
+          ...trip,
+          journal: Array.isArray(trip.journal) ? trip.journal.map((entry) => ({
+            id: entry.id || uid("journal"),
+            text: String(entry.text || "").slice(0, 1200),
+            createdAt: entry.createdAt || new Date().toISOString(),
+            images: Array.isArray(entry.images)
+              ? entry.images.filter((image) => image?.id).map((image) => ({ id: image.id, name: String(image.name || "旅途照片").slice(0, 80) }))
+              : []
+          })) : []
+        })),
         shares: Array.isArray(profile.shares) ? profile.shares : [],
         settings: {
           browserNotify: Boolean(profile.settings?.browserNotify),
@@ -742,6 +858,8 @@
         </div>
       </section>
 
+      ${renderJournalSection(trip)}
+
       <div class="trip-actions-bar">
         <button class="trip-action" type="button" data-action="set-reminder" data-trip-id="${trip.id}">${icon("i-bell")}出发提醒</button>
         <button class="trip-action" type="button" data-action="share-trip" data-trip-id="${trip.id}">${icon("i-share")}分享清单</button>
@@ -751,6 +869,97 @@
         <button class="trip-action danger" type="button" data-action="delete-trip" data-trip-id="${trip.id}">${icon("i-trash")}删除行程</button>
       </div>
     `;
+    hydrateJournalImages(container);
+  }
+
+  function renderJournalSelectedPhotos() {
+    if (!pendingJournalImages.length) {
+      return `<p class="journal-photo-empty">${icon("i-image")} 还没有选择照片</p>`;
+    }
+    return pendingJournalImages.map((image) => `
+      <div class="journal-selected-photo">
+        <img src="${image.dataUrl}" alt="${escapeHtml(image.name)}">
+        <button type="button" data-remove-journal-photo="${image.id}" aria-label="移除${escapeHtml(image.name)}">${icon("i-x")}</button>
+      </div>
+    `).join("");
+  }
+
+  function renderJournalSection(trip) {
+    const entries = Array.isArray(trip.journal) ? trip.journal : [];
+    const imageCount = entries.reduce((sum, entry) => sum + (entry.images?.length || 0), 0);
+    const draftText = journalDraftTripId === trip.id ? journalDraftText : "";
+    return `
+      <section class="travel-journal" id="travelJournal">
+        <div class="journal-heading">
+          <div class="journal-heading-copy">
+            <span class="journal-eyebrow">${icon("i-sparkle")} TRAVEL MEMORIES</span>
+            <h2>旅途见闻</h2>
+            <p>把路上的风景、心情和小故事留在这里。</p>
+          </div>
+          <span class="journal-count">${entries.length} 条手记 · ${imageCount} 张照片</span>
+        </div>
+
+        <div class="journal-composer">
+          <label class="journal-text-field" for="journalEntryText">
+            <span>此刻想记下什么？</span>
+            <textarea id="journalEntryText" maxlength="1200" placeholder="例如：傍晚沿着海边走了很久，风很轻，夕阳把整条街染成了金色……">${escapeHtml(draftText)}</textarea>
+          </label>
+          <div class="journal-photo-selection" id="journalSelectedPhotos">${renderJournalSelectedPhotos()}</div>
+          <div class="journal-composer-footer">
+            <button class="journal-pick-photos" type="button" data-action="pick-journal-photos">${icon("i-image")} 从相册选择照片</button>
+            <span id="journalPhotoStatus">最多 ${JOURNAL_MAX_PHOTOS} 张 · 自动压缩后保存在本机</span>
+            <button class="button button-primary journal-save" type="button" data-action="save-journal-entry">${icon("i-check")} 保存见闻</button>
+          </div>
+        </div>
+
+        <div class="journal-entries ${entries.length ? "" : "is-empty"}">
+          ${entries.length ? entries.map((entry) => `
+            <article class="journal-entry">
+              <div class="journal-entry-head">
+                <span>${icon("i-sparkle")} 旅途手记</span>
+                <time datetime="${escapeHtml(entry.createdAt)}">${formatJournalDate(entry.createdAt)}</time>
+                <button type="button" class="journal-delete" data-delete-journal-entry="${entry.id}" aria-label="删除这条旅途手记">${icon("i-trash")}</button>
+              </div>
+              ${entry.text ? `<p class="journal-entry-text">${escapeHtml(entry.text)}</p>` : ""}
+              ${entry.images?.length ? `
+                <div class="journal-photo-grid photo-count-${Math.min(entry.images.length, 4)}">
+                  ${entry.images.map((image, index) => `
+                    <button class="journal-photo" type="button" data-journal-image-id="${image.id}" aria-label="查看第 ${index + 1} 张照片">
+                      <span class="journal-photo-loading">${icon("i-image")} 正在读取照片</span>
+                    </button>
+                  `).join("")}
+                </div>
+              ` : ""}
+            </article>
+          `).join("") : `
+            <div class="journal-empty">
+              <span>${icon("i-image")}</span>
+              <div><strong>第一段旅途故事，等你来写</strong><p>写下感受并配上照片，再远的风景也会被好好记住。</p></div>
+            </div>
+          `}
+        </div>
+      </section>
+    `;
+  }
+
+  async function hydrateJournalImages(root = document) {
+    const targets = [...root.querySelectorAll("[data-journal-image-id]")];
+    await Promise.all(targets.map(async (target) => {
+      try {
+        const dataUrl = await getJournalImage(target.dataset.journalImageId);
+        if (!target.isConnected) return;
+        if (!dataUrl) {
+          target.classList.add("is-missing");
+          target.innerHTML = `<span class="journal-photo-loading">${icon("i-image")} 照片未找到</span>`;
+          return;
+        }
+        target.innerHTML = `<img src="${dataUrl}" alt="旅途照片" loading="lazy">`;
+        target.classList.add("is-ready");
+      } catch (error) {
+        console.warn("读取旅途照片失败", error);
+        if (target.isConnected) target.innerHTML = `<span class="journal-photo-loading">${icon("i-image")} 读取失败</span>`;
+      }
+    }));
   }
 
   function renderTripCategories(trip) {
@@ -930,6 +1139,11 @@
     if (!trip) {
       showToast("未找到这份行程", true);
       return;
+    }
+    if (currentTripId !== trip.id) {
+      pendingJournalImages = [];
+      journalDraftText = "";
+      journalDraftTripId = trip.id;
     }
     currentTripId = trip.id;
     collapsedCategories = new Set();
@@ -1576,6 +1790,132 @@
     showToast(`已切换到「${currentProfile().name}」的资料档`);
   }
 
+  function refreshJournalPhotoSelection() {
+    const container = document.getElementById("journalSelectedPhotos");
+    const status = document.getElementById("journalPhotoStatus");
+    if (container) container.innerHTML = renderJournalSelectedPhotos();
+    if (status) {
+      status.textContent = pendingJournalImages.length
+        ? `已选 ${pendingJournalImages.length} / ${JOURNAL_MAX_PHOTOS} 张 · 保存后写入本机`
+        : `最多 ${JOURNAL_MAX_PHOTOS} 张 · 自动压缩后保存在本机`;
+    }
+  }
+
+  async function handleJournalPhotoSelection(fileList) {
+    const files = [...(fileList || [])];
+    if (!files.length) return;
+    const textarea = document.getElementById("journalEntryText");
+    journalDraftText = textarea?.value || journalDraftText;
+    journalDraftTripId = currentTripId;
+    const available = JOURNAL_MAX_PHOTOS - pendingJournalImages.length;
+    if (available <= 0) {
+      showToast(`每条手记最多添加 ${JOURNAL_MAX_PHOTOS} 张照片`, true);
+      return;
+    }
+    const selectedFiles = files.slice(0, available);
+    const status = document.getElementById("journalPhotoStatus");
+    if (status) status.textContent = `正在读取 ${selectedFiles.length} 张照片…`;
+    const failures = [];
+    for (const file of selectedFiles) {
+      try {
+        pendingJournalImages.push(await prepareJournalImage(file));
+        refreshJournalPhotoSelection();
+      } catch (error) {
+        failures.push(error.message || "照片读取失败");
+      }
+    }
+    refreshJournalPhotoSelection();
+    if (files.length > available) showToast(`每条手记最多 ${JOURNAL_MAX_PHOTOS} 张照片，多出的照片未添加`, true);
+    else if (failures.length) showToast(failures[0], true);
+    else showToast(`已选择 ${selectedFiles.length} 张照片`);
+  }
+
+  async function saveJournalEntry() {
+    const trip = currentProfile().trips.find((entry) => entry.id === currentTripId);
+    if (!trip) return;
+    const textarea = document.getElementById("journalEntryText");
+    const text = String(textarea?.value || journalDraftText || "").trim();
+    journalDraftText = text;
+    journalDraftTripId = trip.id;
+    if (!text && !pendingJournalImages.length) {
+      showToast("请写点见闻或先选择照片");
+      textarea?.focus();
+      return;
+    }
+    const saveButton = document.querySelector('[data-action="save-journal-entry"]');
+    if (saveButton) {
+      saveButton.disabled = true;
+      saveButton.textContent = "正在保存…";
+    }
+    const imagesForEntry = pendingJournalImages.slice();
+    try {
+      await Promise.all(imagesForEntry.map((image) => putJournalImage(image.id, image.dataUrl)));
+      const entry = {
+        id: uid("journal"),
+        text: text.slice(0, 1200),
+        createdAt: new Date().toISOString(),
+        images: imagesForEntry.map((image) => ({ id: image.id, name: image.name }))
+      };
+      trip.journal = [entry, ...(Array.isArray(trip.journal) ? trip.journal : [])];
+      pendingJournalImages = [];
+      journalDraftText = "";
+      saveStore();
+      renderTripDetail();
+      requestAnimationFrame(() => document.getElementById("travelJournal")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+      showToast("旅途见闻已保存");
+    } catch (error) {
+      console.error("保存旅途见闻失败", error);
+      await deleteJournalImages(imagesForEntry.map((image) => image.id)).catch(() => {});
+      showToast("照片保存失败，请检查浏览器存储空间", true);
+    } finally {
+      const nextButton = document.querySelector('[data-action="save-journal-entry"]');
+      if (nextButton) {
+        nextButton.disabled = false;
+        nextButton.innerHTML = `${icon("i-check")} 保存见闻`;
+      }
+    }
+  }
+
+  function deleteJournalEntry(entryId) {
+    const trip = currentProfile().trips.find((entry) => entry.id === currentTripId);
+    const entry = trip?.journal?.find((item) => item.id === entryId);
+    if (!trip || !entry) return;
+    openConfirm({
+      title: "删除这条旅途见闻？",
+      message: "文字和所选照片都会从当前设备中删除，此操作无法撤销。",
+      target: entry.text ? entry.text.slice(0, 44) : `${entry.images?.length || 0} 张照片`,
+      confirmText: "确认删除",
+      danger: true,
+      onConfirm: () => {
+        trip.journal = trip.journal.filter((item) => item.id !== entryId);
+        deleteJournalImages((entry.images || []).map((image) => image.id)).catch((error) => console.warn("清理照片失败", error));
+        saveStore();
+        renderTripDetail();
+        showToast("旅途见闻已删除");
+      }
+    });
+  }
+
+  async function openJournalImage(imageId) {
+    try {
+      const dataUrl = await getJournalImage(imageId);
+      if (!dataUrl) {
+        showToast("这张照片已不在当前设备中", true);
+        return;
+      }
+      openModal(`
+        <div class="journal-lightbox">
+          <img src="${dataUrl}" alt="旅途照片">
+          <p>${icon("i-image")} 照片仅保存在当前设备</p>
+          <button class="button button-primary" type="button" data-action="close-modal">关闭</button>
+        </div>
+      `);
+    } catch (error) {
+      console.error("打开照片失败", error);
+      showToast("照片读取失败", true);
+    }
+  }
+
   function openConfirm({ title, message, target, confirmText = "确认", danger = false, onConfirm }) {
     openModal(`
       <div class="modal-icon ${danger ? "coral" : "mint"}">${icon(danger ? "i-trash" : "i-check")}</div>
@@ -1621,6 +1961,7 @@
     copy.createdAt = new Date().toISOString();
     copy.updatedAt = new Date().toISOString();
     copy.reminders = [];
+    copy.journal = [];
     copy.categories.forEach((category) => {
       category.id = uid("tripcat");
       category.items.forEach((item) => {
@@ -1762,6 +2103,7 @@
     const index = profile.trips.findIndex((trip) => trip.id === tripId);
     if (index < 0) return;
     const trip = profile.trips[index];
+    const imageIds = getTripJournalImages([trip]);
     openConfirm({
       title: "删除这份行程？",
       message: "行程内的勾选、备注和提醒都会被删除。这个操作无法撤销。",
@@ -1770,6 +2112,7 @@
       danger: true,
       onConfirm: () => {
         profile.trips.splice(index, 1);
+        deleteJournalImages(imageIds).catch((error) => console.warn("清理旅途照片失败", error));
         currentTripId = null;
         saveStore();
         renderAll();
@@ -1870,8 +2213,19 @@
     renderDashboard();
   }
 
-  function exportData() {
-    const payload = JSON.stringify(store, null, 2);
+  async function exportData() {
+    const snapshot = deepClone(store);
+    snapshot.journalMedia = {};
+    const imageIds = getTripJournalImages(store.profiles.flatMap((profile) => profile.trips));
+    for (const imageId of imageIds) {
+      try {
+        const dataUrl = await getJournalImage(imageId);
+        if (dataUrl) snapshot.journalMedia[imageId] = dataUrl;
+      } catch (error) {
+        console.warn("导出旅途照片失败", imageId, error);
+      }
+    }
+    const payload = JSON.stringify(snapshot, null, 2);
     const blob = new Blob([payload], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -1892,8 +2246,10 @@
         const parsed = JSON.parse(String(reader.result || ""));
         const normalized = normalizeStore(parsed);
         pendingImport = normalized;
+        pendingImportMedia = parsed.journalMedia && typeof parsed.journalMedia === "object" ? parsed.journalMedia : {};
         const tripCount = normalized.profiles.reduce((sum, profile) => sum + profile.trips.length, 0);
         const templateCount = normalized.profiles.reduce((sum, profile) => sum + profile.templates.length, 0);
+        const photoCount = Object.values(pendingImportMedia).filter((value) => typeof value === "string" && value.startsWith("data:image/")).length;
         openModal(`
           <div class="modal-icon mint">${icon("i-upload")}</div>
           <h2>导入数据备份</h2>
@@ -1902,22 +2258,39 @@
             <div><strong>${normalized.profiles.length}</strong><span>个本地资料档</span></div>
             <div><strong>${tripCount}</strong><span>个行程</span></div>
             <div><strong>${templateCount}</strong><span>份模板</span></div>
-            <div><strong>${formatShortTime(normalized.lastSavedAt)}</strong><span>备份时间</span></div>
+            <div><strong>${photoCount}</strong><span>张旅途照片</span></div>
           </div>
           <div class="modal-actions">
             <button class="button button-ghost" type="button" data-action="close-modal">取消</button>
             <button class="button button-primary" id="applyImport" type="button">确认覆盖并导入</button>
           </div>
         `);
-        document.getElementById("applyImport").addEventListener("click", () => {
+        document.getElementById("applyImport").addEventListener("click", async () => {
           if (!pendingImport) return;
-          store = pendingImport;
-          pendingImport = null;
-          saveStore();
-          closeModal();
-          renderAll();
-          showView("dashboard");
-          showToast("数据已恢复");
+          const importButton = document.getElementById("applyImport");
+          if (importButton) {
+            importButton.disabled = true;
+            importButton.textContent = "正在恢复…";
+          }
+          const nextStore = pendingImport;
+          const media = pendingImportMedia;
+          const oldImageIds = getTripJournalImages(store.profiles.flatMap((profile) => profile.trips));
+          try {
+            const validMedia = Object.entries(media).filter(([, value]) => typeof value === "string" && value.startsWith("data:image/"));
+            await Promise.all(validMedia.map(([imageId, dataUrl]) => putJournalImage(imageId, dataUrl)));
+            store = nextStore;
+            pendingImport = null;
+            pendingImportMedia = {};
+            saveStore();
+            await deleteJournalImages(oldImageIds.filter((imageId) => !(imageId in media))).catch(() => {});
+            closeModal();
+            renderAll();
+            showView("dashboard");
+            showToast("数据和旅途照片已恢复");
+          } catch (error) {
+            console.error("导入旅途照片失败", error);
+            showToast("备份照片恢复失败，请检查浏览器存储空间", true);
+          }
         });
       } catch (error) {
         showToast(error.message || "备份文件无法读取", true);
@@ -1934,6 +2307,7 @@
       confirmText: "清除全部数据",
       danger: true,
       onConfirm: () => {
+        clearJournalImages().catch((error) => console.warn("清理旅途照片失败", error));
         localStorage.removeItem(STORAGE_KEY);
         store = createInitialStore();
         currentTripId = null;
@@ -1975,6 +2349,7 @@
       return;
     }
     const profile = currentProfile();
+    const imageIds = getTripJournalImages(profile.trips);
     openConfirm({
       title: "删除当前资料档？",
       message: "该资料档的行程、模板和提醒都会被永久删除。其他资料档不受影响。",
@@ -1982,6 +2357,7 @@
       confirmText: "确认删除",
       danger: true,
       onConfirm: () => {
+        deleteJournalImages(imageIds).catch((error) => console.warn("清理旅途照片失败", error));
         store.profiles = store.profiles.filter((item) => item.id !== profile.id);
         store.activeProfileId = store.profiles[0].id;
         currentTripId = null;
@@ -2063,6 +2439,13 @@
         break;
       case "profiles":
         openProfilesModal();
+        break;
+      case "pick-journal-photos":
+        dom.journalPhotoInput.value = "";
+        dom.journalPhotoInput.click();
+        break;
+      case "save-journal-entry":
+        saveJournalEntry();
         break;
       case "toggle-unpacked":
         onlyUnpacked = !onlyUnpacked;
@@ -2152,6 +2535,25 @@
       const profileSwitch = event.target.closest("[data-switch-profile]");
       if (profileSwitch) {
         switchProfile(profileSwitch.dataset.switchProfile);
+        return;
+      }
+
+      const removeJournalPhoto = event.target.closest("[data-remove-journal-photo]");
+      if (removeJournalPhoto) {
+        pendingJournalImages = pendingJournalImages.filter((image) => image.id !== removeJournalPhoto.dataset.removeJournalPhoto);
+        refreshJournalPhotoSelection();
+        return;
+      }
+
+      const deleteJournal = event.target.closest("[data-delete-journal-entry]");
+      if (deleteJournal) {
+        deleteJournalEntry(deleteJournal.dataset.deleteJournalEntry);
+        return;
+      }
+
+      const journalPhoto = event.target.closest("[data-journal-image-id]");
+      if (journalPhoto) {
+        openJournalImage(journalPhoto.dataset.journalImageId);
         return;
       }
 
@@ -2333,9 +2735,19 @@
     document.getElementById("profileMini").addEventListener("click", openProfilesModal);
     document.getElementById("browserNotifyToggle").addEventListener("change", (event) => toggleSetting("browserNotify", event.target.checked));
     document.getElementById("inAppNotifyToggle").addEventListener("change", (event) => toggleSetting("inAppNotify", event.target.checked));
+    dom.journalPhotoInput.addEventListener("change", (event) => {
+      handleJournalPhotoSelection(event.target.files);
+      event.target.value = "";
+    });
     dom.importFile.addEventListener("change", (event) => {
       previewImport(event.target.files?.[0]);
       event.target.value = "";
+    });
+
+    document.addEventListener("input", (event) => {
+      if (event.target.id !== "journalEntryText") return;
+      journalDraftTripId = currentTripId;
+      journalDraftText = event.target.value;
     });
 
     window.addEventListener("online", () => updateNetworkStatus(true));
