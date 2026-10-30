@@ -61,6 +61,7 @@
   let journalDraftText = "";
   let journalDraftTripId = null;
   let journalDbPromise = null;
+  let tripDetailTab = "checklist";
 
   const dom = {
     main: document.getElementById("mainContent"),
@@ -830,7 +831,7 @@
     container.innerHTML = `
       <section class="trip-detail-header">
         <div class="trip-detail-lead" style="background:linear-gradient(125deg,var(--detail-start),${safeColor(trip.accent)})">
-          <div class="detail-kicker">${icon(trip.status === "archived" ? "i-archive" : "i-suitcase")}<span>${trip.status === "archived" ? "已归档的旅程" : "旅程清单"}</span></div>
+          <div class="detail-kicker">${icon(trip.status === "archived" ? "i-archive" : "i-suitcase")}<span>${trip.status === "archived" ? "已归档的旅程" : "旅程详情"}</span></div>
           <h1>${escapeHtml(trip.name)}</h1>
           <div class="detail-route">${icon("i-pin")}<span>${escapeHtml(trip.route)}</span></div>
           <div class="detail-date-row">
@@ -844,9 +845,23 @@
         </div>
       </section>
 
-      <section class="checklist-section">
+      <nav class="trip-detail-tabs" role="tablist" aria-label="行程内容切换">
+        <button class="trip-detail-tab ${tripDetailTab === "checklist" ? "is-active" : ""}" type="button" role="tab" data-action="set-trip-tab" data-trip-tab="checklist" aria-selected="${tripDetailTab === "checklist"}">
+          <span class="trip-tab-icon">${icon("i-suitcase")}</span>
+          <span class="trip-tab-copy"><strong>旅行清单</strong><small>${progress.checked} / ${progress.total} 件已带齐</small></span>
+          <span class="trip-tab-arrow">${icon("i-chevron-right")}</span>
+        </button>
+        <button class="trip-detail-tab ${tripDetailTab === "journal" ? "is-active" : ""}" type="button" role="tab" data-action="set-trip-tab" data-trip-tab="journal" aria-selected="${tripDetailTab === "journal"}">
+          <span class="trip-tab-icon">${icon("i-image")}</span>
+          <span class="trip-tab-copy"><strong>记录见闻</strong><small>${(trip.journal || []).length} 条手记 · ${(trip.journal || []).reduce((sum, entry) => sum + (entry.images?.length || 0), 0)} 张照片</small></span>
+          <span class="trip-tab-arrow">${icon("i-chevron-right")}</span>
+        </button>
+      </nav>
+
+      ${tripDetailTab === "journal" ? renderJournalSection(trip) : `
+      <section class="checklist-section" role="tabpanel" aria-label="旅行清单">
         <div class="checklist-toolbar">
-          <h2>收拾清单 <small style="font-family:var(--sans-font);font-size:10px;color:var(--muted);font-weight:400">${onlyUnpacked ? `${visibleTotal} 件未带` : `${progress.total} 件物品`}</small></h2>
+          <h2>旅行清单 <small style="font-family:var(--sans-font);font-size:10px;color:var(--muted);font-weight:400">${onlyUnpacked ? `${visibleTotal} 件未带` : `${progress.total} 件物品`}</small></h2>
           <div class="checklist-actions">
             <button class="check-filter ${onlyUnpacked ? "is-active" : ""}" type="button" data-action="toggle-unpacked">${icon("i-eye")}只看未带</button>
             <button class="check-filter" type="button" data-action="expand-all">${icon("i-chevron-down")}全部展开</button>
@@ -857,8 +872,7 @@
           ${renderTripCategories(trip)}
         </div>
       </section>
-
-      ${renderJournalSection(trip)}
+      `}
 
       <div class="trip-actions-bar">
         <button class="trip-action" type="button" data-action="set-reminder" data-trip-id="${trip.id}">${icon("i-bell")}出发提醒</button>
@@ -889,7 +903,7 @@
     const imageCount = entries.reduce((sum, entry) => sum + (entry.images?.length || 0), 0);
     const draftText = journalDraftTripId === trip.id ? journalDraftText : "";
     return `
-      <section class="travel-journal" id="travelJournal">
+      <section class="travel-journal" id="travelJournal" role="tabpanel" aria-label="记录见闻">
         <div class="journal-heading">
           <div class="journal-heading-copy">
             <span class="journal-eyebrow">${icon("i-sparkle")} TRAVEL MEMORIES</span>
@@ -1146,6 +1160,7 @@
       journalDraftTripId = trip.id;
     }
     currentTripId = trip.id;
+    tripDetailTab = "checklist";
     collapsedCategories = new Set();
     onlyUnpacked = false;
     renderTripDetail();
@@ -1788,6 +1803,17 @@
     renderAll();
     showView("dashboard");
     showToast(`已切换到「${currentProfile().name}」的资料档`);
+  }
+
+  function setTripDetailTab(tab) {
+    const textarea = document.getElementById("journalEntryText");
+    if (textarea) {
+      journalDraftTripId = currentTripId;
+      journalDraftText = textarea.value;
+    }
+    tripDetailTab = tab === "journal" ? "journal" : "checklist";
+    renderTripDetail();
+    requestAnimationFrame(() => document.querySelector(".trip-detail-tabs")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
 
   function refreshJournalPhotoSelection() {
@@ -2446,6 +2472,9 @@
         break;
       case "save-journal-entry":
         saveJournalEntry();
+        break;
+      case "set-trip-tab":
+        setTripDetailTab(element.dataset.tripTab);
         break;
       case "toggle-unpacked":
         onlyUnpacked = !onlyUnpacked;

@@ -1815,7 +1815,102 @@ svg {
 }
 
 .checklist-section {
-  margin-top: 28px;
+  margin-top: 0;
+}
+
+.trip-detail-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 11px;
+  margin: 18px 0;
+  scroll-margin-top: 84px;
+}
+
+.trip-detail-tab {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 44px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 11px;
+  padding: 13px 15px;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper);
+  box-shadow: var(--shadow-soft);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .2s, background .2s, color .2s, transform .2s;
+}
+
+.trip-detail-tab:hover {
+  border-color: var(--line-dark);
+  transform: translateY(-1px);
+}
+
+.trip-detail-tab.is-active {
+  color: var(--paper);
+  border-color: var(--ink);
+  background: var(--ink);
+}
+
+.trip-tab-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  color: var(--coral-deep);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--yellow-pale) 68%, var(--paper));
+}
+
+.trip-tab-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.trip-detail-tab.is-active .trip-tab-icon {
+  color: var(--paper);
+  background: rgba(255, 255, 255, .14);
+}
+
+.trip-tab-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.trip-tab-copy strong {
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.trip-tab-copy small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trip-detail-tab.is-active .trip-tab-copy small {
+  color: rgba(255, 255, 255, .68);
+}
+
+.trip-tab-arrow {
+  display: grid;
+  place-items: center;
+  color: var(--muted-light);
+}
+
+.trip-tab-arrow svg {
+  width: 15px;
+  height: 15px;
+}
+
+.trip-detail-tab.is-active .trip-tab-arrow {
+  color: rgba(255, 255, 255, .8);
 }
 
 .checklist-toolbar {
@@ -2137,7 +2232,7 @@ svg {
 
 .travel-journal {
   scroll-margin-top: 92px;
-  margin-top: 28px;
+  margin-top: 0;
   padding: 26px;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -4411,6 +4506,42 @@ svg {
     margin: 0;
     font-size: 10px;
     line-height: 1.6;
+  }
+
+  .trip-detail-tabs {
+    gap: 8px;
+    margin: 13px 0 16px;
+    scroll-margin-top: 76px;
+  }
+
+  .trip-detail-tab {
+    grid-template-columns: 35px minmax(0, 1fr);
+    gap: 8px;
+    padding: 11px 10px;
+    border-radius: 14px;
+  }
+
+  .trip-tab-icon {
+    width: 35px;
+    height: 35px;
+    border-radius: 10px;
+  }
+
+  .trip-tab-icon svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  .trip-tab-copy strong {
+    font-size: 12px;
+  }
+
+  .trip-tab-copy small {
+    font-size: 8px;
+  }
+
+  .trip-tab-arrow {
+    display: none;
   }
 
   .checklist-toolbar {
