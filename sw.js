@@ -1,11 +1,12 @@
-const CACHE_NAME = "shoushi-go-v7";
+const BUILD_VERSION = "202610301640";
+const CACHE_NAME = "shoushi-go-v8";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css",
-  "./app.js",
-  "./manifest.webmanifest",
-  "./icon.svg",
+  `./styles.css?v=${BUILD_VERSION}`,
+  `./app.js?v=${BUILD_VERSION}`,
+  `./manifest.webmanifest?v=${BUILD_VERSION}`,
+  `./icon.svg?v=${BUILD_VERSION}`,
   "./icon-192.png",
   "./icon-512.png"
 ];

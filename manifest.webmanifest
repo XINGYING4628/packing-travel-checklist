@@ -3,7 +3,7 @@
   "short_name": "就出发",
   "description": "为每一次出发，准备好每一件小事。",
   "lang": "zh-CN",
-  "start_url": "./",
+  "start_url": "./?source=pwa&v=202610301640",
   "display": "standalone",
   "background_color": "#f7f4ed",
   "theme_color": "#f7f4ed",

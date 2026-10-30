@@ -3,6 +3,7 @@
 
   const STORAGE_KEY = "shoushi-go-store-v1";
   const APP_VERSION = 1;
+  const BUILD_VERSION = "202610301640";
   const JOURNAL_DB_NAME = "shoushi-go-journal-media";
   const JOURNAL_DB_VERSION = 1;
   const JOURNAL_MEDIA_STORE = "photos";
@@ -2784,7 +2785,17 @@
 
     if ("serviceWorker" in navigator && location.protocol !== "file:") {
       window.addEventListener("load", () => {
-        navigator.serviceWorker.register("./sw.js").catch((error) => console.warn("离线支持注册失败", error));
+        const hadController = Boolean(navigator.serviceWorker.controller);
+        navigator.serviceWorker.addEventListener("controllerchange", () => {
+          if (!hadController) return;
+          const refreshKey = `shoushi-sw-refreshed-${BUILD_VERSION}`;
+          if (sessionStorage.getItem(refreshKey)) return;
+          sessionStorage.setItem(refreshKey, "1");
+          window.location.reload();
+        });
+        navigator.serviceWorker.register(`./sw.js?v=${BUILD_VERSION}`, { updateViaCache: "none" })
+          .then((registration) => registration.update())
+          .catch((error) => console.warn("离线支持注册失败", error));
       });
     }
   }
